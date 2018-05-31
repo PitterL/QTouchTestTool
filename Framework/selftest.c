@@ -63,214 +63,123 @@ uint8_t calculate_crc(const uint8_t *data, int len)
 	return crc;
 }
 
-void send_frame(uint8_t cmd, const uint8_t * data, uint8_t len)
+//mg0, no, dat0, dat1, dat3, dat4, dat5, crc
+void send_frame(uint8_t seq, uint8_t dat0, uint8_t dat1, bool result)
 {
 	uint8_t i;
 	uint8_t crc;
-	uint8_t header[4] = {0xa5, 0x5a, 0, 0};
+	uint8_t buf[8];
 	
-	//transfer head
-	header[2] = cmd;
-	header[3] = len;
-	for(i = 0; i < sizeof(header); i++)
-		uart_transmit(header[i]);
+	if (result)
+		buf[0] = 0x5a;  //magic word
+	else
+		buf[0] = 0xfe;	//failed word
+		
+	buf[1] = seq;
+	buf[2] = dat0;
+	buf[3] = dat1;
+	//buf[4:6] random data
 	
-	crc = calculate_crc(header, sizeof(header));
-	uart_transmit(crc);
-
-	//transfer body
-	for(i = 0; i < len; i++)
-		uart_transmit(data[i]);
+	crc = calculate_crc(buf, sizeof(buf) -1);
+	buf[sizeof(buf) - 1] = crc;
 	
-	crc = calculate_crc(data, len);
-	uart_transmit(crc);
+	for(i = 0; i < sizeof(buf); i++)
+		uart_transmit(buf[i]);
 }
 
-void response3(uint8_t cmd, uint8_t param, uint16_t data)
+uint8_t recv_frame(uint8_t * data, uint8_t len, volatile int32_t timeout)
 {
-	uint8_t buf[3] = {param, (uint8_t)data, (uint8_t)(data >> 8u)};
+	uint8_t count = 0;
 	
-	send_frame(cmd, buf, sizeof(buf));
+	while(timeout-- > 0)
+	{
+		if(USART_is_rx_ready()) {
+			data[count++] = USART_read();
+			
+			if (count == len)
+				break;
+		}
+	}
+	
+	return count;
 }
+
+void clear_frame()
+{
+	while(USART_is_rx_ready())
+	{
+		USART_read();
+	}
+}
+
+void response(uint8_t seq, uint16_t data, bool result)
+{
+	send_frame(seq, (uint8_t)data, (uint8_t)(data >> 8u), result);
+}
+
+bool receive(uint8_t *data, uint8_t len)
+{
+	volatile int32_t timeout = 300000;
+	uint8_t crc_calc;
+	uint8_t count;
+	
+	count = recv_frame(data, len, timeout);
+	if (count == len)
+	{
+		crc_calc = calculate_crc(data, len - 1);
+		if (crc_calc == data[len - 1])
+			return true;
+	}
+	
+	data[len -1] = count;	//for debug use
+	return false;
+}
+
 
 void self_test_process(void)
 {
-	unsigned char command;
-	unsigned char parameters;
 	int16_t	temp_int_calc;
 	uint16_t u16temp_output;
 	
-	if((get_sensor_cc_val_command ==  false) && (get_sensor_reference_command ==  false) && (get_sensor_delta_command == false) && (get_sensor_status_command == false))
+	uint8_t buf[4];
+	uint8_t seq, cmd, id;
+	bool result = false;
+	
+	if (USART_is_rx_ready())
 	{
-		if(USART_is_rx_ready() == true)
+		if (receive(buf, sizeof(buf)))
 		{
-			command = USART_recv();
-			if(command == Selftest_Get_Sensor_CC_Val)
+			seq = buf[0];
+			cmd = buf[1];
+			id = buf[2];
+			
+			if (cmd == Selftest_Get_Sensor_CC_Val)
 			{
-				get_sensor_cc_val_command = true;
+				u16temp_output = get_sensor_cc_val(id);
+				result = true;
 			}
-			else if(command == Selftest_Get_Sensor_Reference)
+			else if(cmd == Selftest_Get_Sensor_Reference)
 			{
-				get_sensor_reference_command = true;
+				u16temp_output = get_sensor_node_reference(id);
+				result = true;
 			}
-			else if(command == Selftest_Get_Sensor_Delta)
+			else if(cmd == Selftest_Get_Sensor_Delta)
 			{
-				get_sensor_delta_command = true;
+				temp_int_calc = get_sensor_node_signal(id);
+				temp_int_calc -= get_sensor_node_reference(id);
+				u16temp_output = (uint16_t)(temp_int_calc);
+				result = true;
 			}
-			else if(command == Selftest_Get_Status)
+			else
 			{
-				get_sensor_status_command = true;
+				u16temp_output = 0xfefe;
+				clear_frame();
 			}
+		}else{
+			u16temp_output = 0xffff;
+			clear_frame();
 		}
+		
+		response(seq, u16temp_output, result);	
 	}
-
-	if(get_sensor_cc_val_command == true)
-	{
-		if(USART_is_rx_ready() == true)
-		{
-			parameters = USART_recv();
-			u16temp_output = get_sensor_cc_val(parameters);
-			/*
-			uart_transmit(Selftest_Get_Sensor_CC_Val);
-			uart_transmit(parameters);
-			uart_transmit((uint8_t)u16temp_output);
-			uart_transmit((uint8_t)(u16temp_output >> 8u));
-			*/
-			response3(Selftest_Get_Sensor_CC_Val, parameters, u16temp_output);
-			get_sensor_cc_val_command = false;
-		}
-	}
-
-	if(get_sensor_reference_command == true)
-	{
-		if(USART_is_rx_ready() == true)
-		{
-			parameters = USART_recv();
-			/* Reference */
-			u16temp_output = get_sensor_node_reference(parameters);
-			/*
-			uart_transmit(Selftest_Get_Sensor_Reference);
-			uart_transmit(parameters);
-			uart_transmit((uint8_t)u16temp_output);
-			uart_transmit((uint8_t)(u16temp_output >> 8u));
-			*/
-			response3(Selftest_Get_Sensor_Reference, parameters, u16temp_output);
-			get_sensor_reference_command = false;
-		}
-	}
-
-	if(get_sensor_delta_command == true)
-	{
-		if(USART_is_rx_ready() == true)
-		{
-			parameters = USART_recv();
-			/* Touch delta */
-			temp_int_calc = get_sensor_node_signal(parameters);
-			temp_int_calc -= get_sensor_node_reference(parameters);
-			u16temp_output = (uint16_t)(temp_int_calc);
-			/*
-			uart_transmit(Selftest_Get_Sensor_Delta);
-			uart_transmit(parameters);
-			uart_transmit((uint8_t)u16temp_output);
-			uart_transmit((uint8_t)(u16temp_output >> 8u));
-			*/
-			response3(Selftest_Get_Sensor_Delta, parameters, u16temp_output);
-			get_sensor_delta_command = false;
-		}
-	}
-	/*
-	if(get_sensor_status_command == true)
-	{
-		if(USART_is_rx_ready() == true)
-		{
-			parameters = USART_recv();
-			// Touch delta 
-			u16temp_output = (uint16_t)(temp_int_calc);
-			uart_transmit(Selftest_Get_Status);
-			uart_transmit(parameters);
-			if(parameters == 0x00)
-			{
-				uart_transmit((uint8_t) FW_Version);
-				uart_transmit((uint8_t) (FW_Version >> 8u));
-			}
-			else if(parameters == 0x01)
-			{
-				uart_transmit((uint8_t) Selftest_OK);
-				uart_transmit((uint8_t)(Selftest_OK >> 8u));
-			}
-			else if(parameters == 0x02)
-			{
-				uart_transmit((uint8_t) Sleep_Message);
-				uart_transmit((uint8_t)(Sleep_Message >> 8u));
-				RTC_set_period(2000);
-				TIMER_0_stop();
-				for(int i = 0; i < DEF_NUM_CHANNELS; i++)
-				{
-					qtm_key_suspend(i, &qtlib_key_set1);
-				}
-				touch_is_sleep = true;
-				touch_is_awake = false;
-				for(int j = 0; j < 1000; j++)
-				{
-				}
-				sleep(PM_SLEEP_STANDBY);
-			}
-			else if(parameters == 0x03)
-			{
-				uart_transmit((uint8_t) Wake_Message);
-				uart_transmit((uint8_t)(Wake_Message >> 8u));
-				RTC_set_period(DEF_TOUCH_MEASUREMENT_PERIOD_MS);
-				TIMER_0_init();
-				for(int i = 0; i < DEF_NUM_CHANNELS; i++)
-				{
-					qtm_key_resume(i, &qtlib_key_set1);
-				}
-				touch_is_sleep = false;
-				touch_is_awake = true;
-			}
-			else if(parameters == 0x04)
-			{
-				uart_transmit((uint8_t) Enable_Message);
-				uart_transmit((uint8_t)(Enable_Message >> 8u));
-				five_tap_disable_timer = 0;
-				five_tap_disable = 0;
-				
-			}
-			get_sensor_status_command = false;
-		}
-	}
-	*/
 }
-
-#if 0
-void touch_wakeup(void)
-{
-	uart_transmit((uint8_t) Wake_Message);
-	uart_transmit((uint8_t)(Wake_Message >> 8u));
-	RTC_set_period(DEF_TOUCH_MEASUREMENT_PERIOD_MS);
-	TIMER_0_init();
-	for(int i = 0; i < DEF_NUM_CHANNELS; i++)
-	{
-		qtm_key_resume(i, &qtlib_key_set1);
-	}
-	touch_is_sleep = false;
-	touch_is_awake = true;
-}
-
-/*============================================================================
-void Timer_set_period(const uint8_t val)
-------------------------------------------------------------------------------
-Purpose: This function sets the time interval on the RTC/Timer peripheral based
-         on the user configuration.
-Input  : Time interval
-Output : none
-Notes  :
-============================================================================*/
-void RTC_set_period(const uint16_t val)
-{
-	while (RTC.STATUS & RTC_PERBUSY_bm) /* wait for RTC synchronization */
-		;
-	RTC.PER = val;
-}
-
-#endif

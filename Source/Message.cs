@@ -121,7 +121,7 @@ namespace QTouch_UART_Tool
 
             if (btn.InvokeRequired)
             {
-                return (bool) this.Invoke(click, new object[] { btn });
+                return (bool)this.Invoke(click, new object[] { btn });
             }
             else
             {
@@ -212,7 +212,6 @@ namespace QTouch_UART_Tool
         private void ReceiveDataFromClient()
         {
             NamedPipeServerStream pipe;
-            string status;
 
             while (!_threadExit)
             {

@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Express 15 for Windows Desktop
+VisualStudioVersion = 15.0.27428.2043
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QTouch_UART_Tool", "QTouch_UART_Tool.csproj", "{E869F1E8-60F5-4E7D-BC07-7E9EEC652E3D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x86 = Debug|x86
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E869F1E8-60F5-4E7D-BC07-7E9EEC652E3D}.Debug|x86.ActiveCfg = Debug|x86
+		{E869F1E8-60F5-4E7D-BC07-7E9EEC652E3D}.Debug|x86.Build.0 = Debug|x86
+		{E869F1E8-60F5-4E7D-BC07-7E9EEC652E3D}.Release|x86.ActiveCfg = Release|x86
+		{E869F1E8-60F5-4E7D-BC07-7E9EEC652E3D}.Release|x86.Build.0 = Release|x86
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {44B4EF95-2BB0-4097-AF93-F631B48C086B}
+	EndGlobalSection
+EndGlobal
