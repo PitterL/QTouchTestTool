@@ -28,11 +28,7 @@
 #define Selftest_Calibrate 0x34
 #define Selftest_Suspend 0x35
 #define Selftest_Resume 0x36
-#define Selftest_Cmd_Error 0xfe
-#define Selftest_Bus_Error 0xff
-
 
 void self_test_process(void);
-void touch_wakeup(void);
 
 #endif /* SELFTEST_H_ */

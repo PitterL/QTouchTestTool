@@ -5,30 +5,24 @@
  *  Author: A41536
  */ 
 #include "selftest.h"
-#include "atmel_start.h"
 #include "usart_basic.h"
-#include "datastreamer.h"
-#include "driver_init.h"
 #include "touch.h"
-//#include "tca.h"
 
-extern qtm_touch_key_group_data_t qtlib_key_grp_data_set1;
-extern qtm_touch_key_control_t   qtlib_key_set1;
-//extern five_tap_disable_timer;
-//extern five_tap_disable;
+#define FRAME_MAGICWORD 0x5a
+#define LENGTH_FRAME_L 68
+#define LENGTH_FRAME_S 8
 
-bool get_sensor_status_command = false;
-bool get_sensor_cc_val_command = false;
-bool get_sensor_reference_command = false;
-bool get_sensor_delta_command = false;
-bool touch_is_sleep = false;
-bool touch_is_awake = true;
-
-//void RTC_set_period(const uint16_t val);
-
-uint8_t USART_recv(void)
+bool USART_recv(uint8_t *buf, volatile int32_t timeout)
 {
-	return USART_read();
+	while(timeout-- > 0)
+	{
+		if(USART_is_rx_ready()) {
+			*buf = USART_read();
+			return true;
+		}
+	}
+		
+	return false;
 }
 
 void uart_transmit(const uint8_t data)
@@ -63,22 +57,26 @@ uint8_t calculate_crc(const uint8_t *data, int len)
 	return crc;
 }
 
-//mg0, no, dat0, dat1, dat3, dat4, dat5, crc
-void send_frame(uint8_t seq, uint8_t dat0, uint8_t dat1, bool result)
+//magw, seq, seqn, dat0, dat1, dat3, dat4, crc
+enum {S_MAGW, S_SEQ, S_SEQN, S_DATA};
+void send_frame8(uint8_t seq, uint8_t dat0, uint8_t dat1, bool result)
 {
 	uint8_t i;
 	uint8_t crc;
-	uint8_t buf[8];
+	uint8_t buf[LENGTH_FRAME_S];
 	
-	if (result)
-		buf[0] = 0x5a;  //magic word
-	else
-		buf[0] = 0xfe;	//failed word
-		
-	buf[1] = seq;
-	buf[2] = dat0;
-	buf[3] = dat1;
-	//buf[4:6] random data
+	buf[S_MAGW] = FRAME_MAGICWORD;  //magic word
+	if (seq & 0x1)
+		seq++;		//odd: long response, even: short response
+	
+	if (!result)
+		seq += 2;	//seq not match received, that mean NAK
+	
+	buf[S_SEQ] = seq;
+	buf[S_SEQN] = ~seq;
+	buf[S_DATA] = dat0;
+	buf[S_DATA + 1] = dat1;
+	//buf[5:6] random data
 	
 	crc = calculate_crc(buf, sizeof(buf) -1);
 	buf[sizeof(buf) - 1] = crc;
@@ -112,74 +110,110 @@ void clear_frame()
 	}
 }
 
-void response(uint8_t seq, uint16_t data, bool result)
+void response8(uint8_t seq, uint16_t data, bool result)
 {
-	send_frame(seq, (uint8_t)data, (uint8_t)(data >> 8u), result);
+	send_frame8(seq, (uint8_t)data, (uint8_t)(data >> 8u), result);
 }
 
-bool receive(uint8_t *data, uint8_t len)
+#define OK  0
+#define ETIMEOUT  1
+#define EVAL 2
+#define EMEM 3
+
+enum {R_MAGW, R_SEQ, R_SEQN, R_CMD, R_ID, R_DATA};
+
+int receive(uint8_t *data, uint8_t len)
 {
-	volatile int32_t timeout = 300000;
-	uint8_t crc_calc;
-	uint8_t count;
+	const int32_t timeout = 30000;
+	uint8_t magw, seq, seqn, crc_calc;
+	uint8_t count, size, size_left, off;
+
+	if (!USART_recv(&magw, timeout))
+		return -ETIMEOUT;
 	
-	count = recv_frame(data, len, timeout);
-	if (count == len)
+	if (magw != FRAME_MAGICWORD)
+		return -EVAL;
+		
+	if (!USART_recv(&seq, timeout))
+		return -ETIMEOUT;
+	
+	if (!USART_recv(&seqn, timeout))
+		return -ETIMEOUT;
+	
+	if (seq & seqn)
+		return -EVAL;
+	
+	if (seq & 1)
+		size = LENGTH_FRAME_L;	//even short command, odd long command
+	else
+		size = LENGTH_FRAME_S;
+	
+	if (len < size)
+		return -EMEM;
+	
+	data[R_MAGW] = magw;
+	data[R_SEQ] = seq;
+	data[R_SEQN] = seqn;
+	off = R_SEQN + 1;
+	size_left = size - off;
+	
+	count = recv_frame(data + off, size_left, timeout * size_left);
+	if (count == size_left)
 	{
-		crc_calc = calculate_crc(data, len - 1);
-		if (crc_calc == data[len - 1])
-			return true;
-	}
-	
-	data[len -1] = count;	//for debug use
-	return false;
+		crc_calc = calculate_crc(data, size - 1);
+		if (crc_calc == data[size - 1])
+			return OK;
+		else
+			return -EVAL;
+	}else
+		return -ETIMEOUT;
 }
-
 
 void self_test_process(void)
 {
 	int16_t	temp_int_calc;
 	uint16_t u16temp_output;
 	
-	uint8_t buf[4];
+	uint8_t buf[LENGTH_FRAME_L];
 	uint8_t seq, cmd, id;
-	bool result = false;
+	int res;
 	
 	if (USART_is_rx_ready())
 	{
-		if (receive(buf, sizeof(buf)))
+		do {
+			res = receive(buf, sizeof(buf));
+		}while(res == -EVAL);
+		
+		if (res == OK)
 		{
-			seq = buf[0];
-			cmd = buf[1];
-			id = buf[2];
+			seq = buf[R_SEQ];
+			cmd = buf[R_CMD];
+			id = buf[R_ID];
 			
 			if (cmd == Selftest_Get_Sensor_CC_Val)
 			{
 				u16temp_output = get_sensor_cc_val(id);
-				result = true;
 			}
 			else if(cmd == Selftest_Get_Sensor_Reference)
 			{
 				u16temp_output = get_sensor_node_reference(id);
-				result = true;
 			}
 			else if(cmd == Selftest_Get_Sensor_Delta)
 			{
 				temp_int_calc = get_sensor_node_signal(id);
 				temp_int_calc -= get_sensor_node_reference(id);
 				u16temp_output = (uint16_t)(temp_int_calc);
-				result = true;
 			}
 			else
 			{
-				u16temp_output = 0xfefe;
-				clear_frame();
+				res = -EVAL;
+				u16temp_output = 0xffee;
 			}
 		}else{
-			u16temp_output = 0xffff;
-			clear_frame();
+			seq = 0xfe;
+			u16temp_output = 0xfffe;
 		}
 		
-		response(seq, u16temp_output, result);	
+		response8(seq, u16temp_output, res == OK);	
 	}
 }

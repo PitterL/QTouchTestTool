@@ -106,7 +106,7 @@ namespace QTouch_UART_Tool
 
         //Indicate test error occure count
         public int cTestErrorCount;
-        public const int cMaxTestErrorCount = 10;
+        public const int cMaxTestErrorCount = 3;
 
         //Store test result string
         public Dictionary<string, string> cTestOutputSteam;
@@ -118,13 +118,26 @@ namespace QTouch_UART_Tool
         public const string cVersion = "1.2.5";
 
         //command queue
+        enum SData {MGW=0, SEQ, SEQN, CMD, ID, DAT};
         public Queue<byte[]> cCommandQueue;
         public byte cCommandSeq;
+        public const byte cCommandSeqStep = 2;
+
+        //received data
+        enum RData {MGW=0, SEQ, SEQN, DAT};
+
+        //frame length
+        public const int cLengthFrameL = 68;
+        public const int cLengthFrameS = 8;
 
         //Timer for watch command
         public const int cCmdTimeout = 500;
         public System.Timers.Timer cCmdTimer;
 
+        public const byte cCommandMagw = 0x5a;
+        public const byte cCommandRef = 0x31;
+        public const byte cCommandDelta = 0x33;
+        
         //Load the test parameter information or create the new if not exist, the data is stored into a JSON file
         private Product CreatDatabase()
         {
@@ -227,7 +240,7 @@ namespace QTouch_UART_Tool
 
             //command queue
             cCommandQueue = new Queue<byte[]>();
-            cCommandSeq = 0;
+            cCommandSeq = 0;    //step 2, even for short command, odd for long command
 
             //hander user to control test procss
             cCmdTimer = new System.Timers.Timer(cCmdTimeout);
@@ -261,7 +274,12 @@ namespace QTouch_UART_Tool
         {
             public byte id { get; set; }
             public byte cmd { get; set; }
-            public int data { get; set; }
+            public byte[] data;
+        }
+
+        private byte SerialReadByte()
+        {
+            return (byte)serialPort1.ReadByte();
         }
 
         private void SerialReset()
@@ -276,16 +294,25 @@ namespace QTouch_UART_Tool
                 serialPort1.Close();
         }
 
+        private byte GetCmdLength(byte seq)
+        {
+            if ((seq & 0x1) == 0)
+                return cLengthFrameS;   //even, short command
+            else
+                return cLengthFrameL;  //odd, long command
+        }
+
         private void SerialSendFrame(byte[] data)
         {
-            byte[] raw = new byte[4];
-            //seq, cmd, id, crc
-            raw[0] = data[0];
-            raw[1] = data[1];
-            raw[2] = data[2];
+            byte[] raw;   //magic, seq, ~seq, cmd, id, dat0, dat1, crc
+            byte crc_calc;
 
-            byte crc_calc = calculate_crc(raw, 3);
-            raw[3] = crc_calc;
+            byte len = GetCmdLength(data[(int)SData.SEQ]);
+            raw = new byte[len];
+            Array.Copy(data, raw, data.Count());
+
+            crc_calc = calculate_crc(raw, raw.Count() - 1);
+            raw[raw.Count() - 1] = crc_calc;
 
             cCmdTimer.Start();
             serialPort1.Write(raw, 0, raw.Count());
@@ -324,19 +351,19 @@ namespace QTouch_UART_Tool
             else
                 return result > NodeState.INIT;
         }
-
+        
         private delegate void NowCloseCommand();
         private delegate void NowResetCommand();
         private delegate void NowSendCommand(byte[] data);
         private void TestingStartEvent(object sender, EventArgs e)
         {
-            byte[] data;
-            int[] cells = new int[] { 1, 4, 7 };
             byte id = Convert.ToByte(sender);
+            byte[] data;
 
             if (id >= cTestProd.btnCount)
                 throw new System.ArgumentException("TestingStartEvent: testing id out of range");
 
+            int[] cells = new int[] { 1, 4, 7 };
             foreach (var cid in cells)
             {
                 this.dataGridView_Test.Rows[id].Cells[cid].Value = "";
@@ -352,18 +379,17 @@ namespace QTouch_UART_Tool
             if (cTestProd.rCheck)
             {
                 node.rstatus = NodeState.INIT;
-                data = new byte[]{ cCommandSeq++, 0x31, id };
-                //NowSendCommand cmd = new NowSendCommand(SerialSendFrame);
-                //this.Invoke(cmd, data);
+                //magic, seq, ~seq, cmd, id, dat0, dat1, ..., crc
+                data = new byte[] { cCommandMagw, cCommandSeq, (byte)~cCommandSeq, cCommandRef, id};
+                cCommandSeq += cCommandSeqStep;
                 cCommandQueue.Enqueue(data);
             }
 
             if (cTestProd.dCheck)
             {
                 node.dstatus = NodeState.INIT;
-                data = new byte[] { cCommandSeq++, 0x33, id };
-                //NowSendCommand cmd = new NowSendCommand(SerialSendFrame);
-                //this.Invoke(cmd, data);
+                data = new byte[] { cCommandMagw, cCommandSeq, (byte)~cCommandSeq, cCommandDelta, id };
+                cCommandSeq += cCommandSeqStep;
                 cCommandQueue.Enqueue(data);
             }
 
@@ -374,18 +400,27 @@ namespace QTouch_UART_Tool
 
         private void TestingProgressEvent(object sender, EventArgs e)
         {
-            byte id = Convert.ToByte(sender);
             TestingEventArgs evt = e as TestingEventArgs;
+            byte[] rdata = evt.data;
+            byte cmd = evt.cmd, id = evt.id;
+            int value;
 
+            value = rdata[(int)RData.DAT] + rdata[(int)RData.DAT + 1] * 256;
+            if (value > 32767)
+            {
+                value -= 65536;
+            }
+
+            RichTextSet(richTextBox_com, "Button " + id.ToString() + " = " + Convert.ToString(value, 10) + "\r\n", true);
             if (id >= cTestProd.btnCount)
                 throw new System.ArgumentException("TestingProgressEvent: testing id out of range");
 
             ref NodeData node = ref cButtonNodes[id];
             node.id = id;
 
-            if (evt.cmd == 0x31)
+            if (cmd == cCommandRef)
             {
-                node.reference = evt.data;
+                node.reference = value;
                 this.dataGridView_Test.Rows[id].Cells[1].Value = node.reference;
                 if (node.rlimit_low <= node.reference && node.rlimit_high > node.reference)
                 {
@@ -398,9 +433,9 @@ namespace QTouch_UART_Tool
                     node.rstatus = NodeState.FAILED;
                 }
             }
-            else if (evt.cmd == 0x33)
+            else if (cmd == cCommandDelta)
             {
-                node.delta = evt.data;
+                node.delta = value;
                 this.dataGridView_Test.Rows[id].Cells[4].Value = node.delta;
                 if (node.dlimit_low <= node.delta && node.dlimit_high > node.delta)
                 {
@@ -431,11 +466,14 @@ namespace QTouch_UART_Tool
                 }
             }
 
+            cTestErrorCount = 0;
+            cCmdTimer.Stop();
+            cCommandQueue.Dequeue();
             if (cCommandQueue.Count() > 0)
             {
                 byte[] data = cCommandQueue.Peek();
-                NowSendCommand cmd = new NowSendCommand(SerialSendFrame);
-                this.Invoke(cmd, data);
+                NowSendCommand send = new NowSendCommand(SerialSendFrame);
+                this.Invoke(send, data);
             }
             else
             {
@@ -444,8 +482,8 @@ namespace QTouch_UART_Tool
                 else
                 {
                     if (checkTested(cTestProd.rCheck, node.rstatus) && checkTested(cTestProd.dCheck, node.dstatus))
-                        NowTestingFinishedEvent.BeginInvoke(id, new EventArgs(), null, null);
-                    //NowTestingFinishedEvent.Invoke(id, new EventArgs());
+                        //NowTestingFinishedEvent.BeginInvoke(id, new EventArgs(), null, null);
+                        NowTestingFinishedEvent.Invoke(id, new EventArgs());
                 }
             }
         }
@@ -521,75 +559,65 @@ namespace QTouch_UART_Tool
 
         private void serialPort1_DataReceived(object sender, System.IO.Ports.SerialDataReceivedEventArgs e)
         {
-            const byte magicW = 0x5a;
             byte[] sdata, rdata;
-            byte seq, cmd, id, crc, crc_calc;
-            int value;
-
-            string text;
-
+            byte magw, seq, seqn, len, crc, crc_calc;
+            
             if (cCommandQueue.Count() > 0)
             {
                 sdata = cCommandQueue.Peek();
-                seq = sdata[0];
-                cmd = sdata[1];
-                id = sdata[2];
-                if (cmd < 0x40)    //Short command
-                {
-                    //mg0, no, dat0, dat1, dat3, dat4, dat5, crc
-                    rdata = new byte[8];
-                }
-                else
-                {
-                    rdata = new byte[32];
-                }
-
                 try
                 {
-                    for (int i = 0; i < rdata.Count(); i++)
-                        rdata[i] = (byte)serialPort1.ReadByte();
+                    //magic word
+                    magw = SerialReadByte();
+                    if (magw != cCommandMagw)
+                        throw new System.ArgumentException("Serial read magic word excepetion", " " + cCommandMagw.ToString() + " mag get: " + magw.ToString());
 
-                    if (magicW != rdata[0])
-                        throw new System.ArgumentException("Serial read magic word excepetion", "mag: " + magicW.ToString() + " mag get: " + rdata[0].ToString());
+                    //seq checksum
+                    seq = SerialReadByte();
+                    seqn = SerialReadByte();
+                    if ((seq & seqn) != 0)
+                        throw new System.ArgumentException("Serial read seq excepetion", " " + seq.ToString() + " seqn get: " + seqn.ToString());
 
-                    if (seq != rdata[1])
-                        throw new System.ArgumentException("Serial read seq excepetion", "seq: " + seq.ToString() + " seq get: " + rdata[1].ToString());
+                    //seq compare with command
+                    if (!(seq >= sdata[(int)SData.SEQ] && seq < sdata[(int)SData.SEQ] + cCommandSeqStep))
+                        throw new System.ArgumentException("Serial read seq excepetion", " " + seq.ToString() + " cmd seq get: " + sdata[(int)SData.SEQ].ToString());
+
+                    //read data
+                    len = GetCmdLength(seq);
+                    rdata = new byte[len];
+                    for (int i = (int)RData.SEQN + 1; i < len; i++)
+                    {
+                        rdata[i] = SerialReadByte();
+                    }
+                    rdata[(int)RData.MGW] = magw;
+                    rdata[(int)RData.SEQ] = seq;
+                    rdata[(int)RData.SEQN] = seqn;
 
                     crc = rdata[rdata.Count() - 1];
                     crc_calc = calculate_crc(rdata, rdata.Count() - 1);
                     if (crc_calc != crc)
                         throw new System.ArgumentException("Serial read crc excepetion", "crc: " + crc.ToString() + " crc calc: " + crc_calc.ToString());
 
-                    value = rdata[2] + rdata[3] * 256;
-                    if (value > 32767)
-                    {
-                        value -= 65536;
-                    }
-                    text = "Button " + id.ToString() + " =  " + Convert.ToString(value, 10) + "\r\n";
-                    richTextBox_com.AppendText(text);
+                    TestingEventArgs evt = new TestingEventArgs();
+                    evt.cmd = sdata[(int)SData.CMD];
+                    evt.id = sdata[(int)SData.ID];
+                    evt.data = rdata;
 
-                    cCmdTimer.Stop();
-                    cCommandQueue.Dequeue();
-
-                    TestingEventArgs evt = new TestingEventArgs { };
-                    evt.id = id;
-                    evt.cmd = cmd;
-                    evt.data = value;
-                    NowTestingProgressEvent.Invoke(id, evt);
-
+                    NowTestingProgressEvent.Invoke(evt.id, evt);
                 }
                 catch (System.SystemException error)
                 {
                     richTextBox_com.AppendText("Series data crashed: " + error.Message + "\n");
 
-                    cCmdTimer.Stop();
-                    doCommandTimeout();
+                    //cCmdTimer.Stop();
+                    //doCommandTimeout();
                 }
             }
             else
             {
                 richTextBox_com.AppendText("No command queued with message");
-                serialPort1.DiscardInBuffer();
+                //serialPort1.DiscardInBuffer();
+                SerialReset();
             }
         }
 
