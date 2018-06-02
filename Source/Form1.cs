@@ -322,11 +322,11 @@ namespace QTouch_UART_Tool
         {
             NowResetCommand reset = new NowResetCommand(SerialReset);
             this.Invoke(reset);
-
+            
             if (cCommandQueue.Count() > 0)
             { 
-                byte[] sData = cCommandQueue.Dequeue();
-                byte id = sData[2];
+                byte[] sdata = cCommandQueue.Dequeue();
+                byte id = sdata[(int)SData.ID];
                 NowTestingErrorEvent.Invoke(id, new EventArgs());
             }
         }
@@ -358,7 +358,7 @@ namespace QTouch_UART_Tool
         private void TestingStartEvent(object sender, EventArgs e)
         {
             byte id = Convert.ToByte(sender);
-            byte[] data;
+            byte[] sdata;
 
             if (id >= cTestProd.btnCount)
                 throw new System.ArgumentException("TestingStartEvent: testing id out of range");
@@ -380,22 +380,22 @@ namespace QTouch_UART_Tool
             {
                 node.rstatus = NodeState.INIT;
                 //magic, seq, ~seq, cmd, id, dat0, dat1, ..., crc
-                data = new byte[] { cCommandMagw, cCommandSeq, (byte)~cCommandSeq, cCommandRef, id};
+                sdata = new byte[] { cCommandMagw, cCommandSeq, (byte)~cCommandSeq, cCommandRef, id};
                 cCommandSeq += cCommandSeqStep;
-                cCommandQueue.Enqueue(data);
+                cCommandQueue.Enqueue(sdata);
             }
 
             if (cTestProd.dCheck)
             {
                 node.dstatus = NodeState.INIT;
-                data = new byte[] { cCommandMagw, cCommandSeq, (byte)~cCommandSeq, cCommandDelta, id };
+                sdata = new byte[] { cCommandMagw, cCommandSeq, (byte)~cCommandSeq, cCommandDelta, id };
                 cCommandSeq += cCommandSeqStep;
-                cCommandQueue.Enqueue(data);
+                cCommandQueue.Enqueue(sdata);
             }
 
-            data = cCommandQueue.Peek();
+            sdata = cCommandQueue.Peek();
             NowSendCommand cmd = new NowSendCommand(SerialSendFrame);
-            this.Invoke(cmd, data);
+            this.Invoke(cmd, sdata);
         }
 
         private void TestingProgressEvent(object sender, EventArgs e)
@@ -511,6 +511,8 @@ namespace QTouch_UART_Tool
             byte id = Convert.ToByte(sender);
             TestingEventArgs evt = e as TestingEventArgs;
 
+            RichTextSet(richTextBox_com, "Testing occur error, try " + cTestErrorCount.ToString() + " id " + id.ToString() + "\n");
+
             if (id >= cTestProd.btnCount)
                 throw new System.ArgumentException("TestingErrorEvent: testing id out of range");
 
@@ -607,7 +609,7 @@ namespace QTouch_UART_Tool
                 }
                 catch (System.SystemException error)
                 {
-                    richTextBox_com.AppendText("Series data crashed: " + error.Message + "\n");
+                    RichTextSet(richTextBox_com, "Series data crashed: " + error.Message + "\n");
 
                     //cCmdTimer.Stop();
                     //doCommandTimeout();
@@ -615,7 +617,7 @@ namespace QTouch_UART_Tool
             }
             else
             {
-                richTextBox_com.AppendText("No command queued with message");
+                RichTextSet(richTextBox_com, "No command queued with message");
                 //serialPort1.DiscardInBuffer();
                 SerialReset();
             }
